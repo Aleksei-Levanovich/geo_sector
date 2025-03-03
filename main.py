@@ -63,8 +63,6 @@ def get_distance_to_nearest_boundary_point(geometry, detected_sector: Sector):
     else:
         return None  # Неизвестный тип границы
 
-
-
     for line in lines:
         if isinstance(line, LineString):
             # Если линия — это LineString, то просто обрабатываем её как один отрезок
@@ -220,18 +218,12 @@ def main():
                     geometry = row.geometry
                     distance = get_distance_to_nearest_boundary_point(geometry, detection_sector)
                     if distance is not None:
-                        if str(row.building)!='nan':
+                        if str(row.building) != 'nan':
                             print(
                                 f"Здание ({idx}) - Улица {row.get('addr:street')}, Дом {row.get('addr:housenumber')}, distance: {distance}")
-                        elif str(row.highway)!='nan':
+                        elif str(row.highway) != 'nan':
                             print(
                                 f"Улица {row.get('name')} ({idx}), distance: {distance}")
-                    # print(f"Найдено: {row}, расстояние: {distance:.2f} метров")
-
-                    # if row.highway in allowed_highways:
-                    #     print(f"Найден highway: {row.highway}, расстояние: {distance:.2f} метров")
-                    # if row.building == 'yes':
-                    #     print(f"Найден building, расстояние: {distance:.2f} метров")
 
 
 if __name__ == '__main__':
