@@ -1,8 +1,13 @@
+import math
+
 import numpy as np
 import osmnx as ox
-from shapely.geometry import Point, LineString
 from geopy.distance import geodesic
-import math
+from shapely.geometry import Point, LineString
+from shapely.geometry.multilinestring import MultiLineString
+from shapely.geometry.multipoint import MultiPoint
+
+from Sector import Sector
 
 
 def move_point(lat, lon, bearing, distance_m):
@@ -26,15 +31,58 @@ def is_point_in_sector(point, center, direction, angle):
         return point_angle >= lower_bound or point_angle <= upper_bound
 
 
-def get_nearest_point(geometry, target_point):
-    if geometry.geom_type == 'Point':
-        return geometry
-    elif geometry.geom_type == 'LineString':
-        return geometry.interpolate(geometry.project(target_point))
-    elif geometry.geom_type == 'Polygon':
-        return geometry.boundary.interpolate(geometry.boundary.project(target_point))
+def get_distance_to_nearest_boundary_point(geometry, detected_sector: Sector):
+    """
+    Определяет минимальное расстояние от точки внутри сектора к ближайшей границе объекта geometry.
+
+    Параметры:
+    - geometry: объект shapely (Polygon, MultiPolygon, LineString, MultiLineString)
+    - detected_sector: объект Sector (Polygon)
+
+    Возвращает:
+    - float — минимальное расстояние до ближайшей точки внутри сектора в метрах.
+    """
+    center = Point(detected_sector.center)  # Центр сектора
+    boundary = geometry.boundary  # Граница объекта (может быть MultiLineString или LineString)
+    min_distance = float("inf")
+    nearest_point = None
+    # Обрабатываем случай, если граница состоит из нескольких частей
+    if isinstance(boundary, MultiLineString):
+        lines = list(boundary.geoms)  # Достаём отдельные LineString
+    elif isinstance(boundary, LineString):
+        lines = [boundary]  # Обычный LineString кладём в список
+    elif isinstance(boundary, MultiPoint):
+        if isinstance(geometry, LineString):
+            lines = [geometry]
+        else:
+            # Получаем первую и последнюю точку в MultiPoint
+            first_point = (boundary.bounds[0], boundary.bounds[1])
+            last_point = (boundary.bounds[-2], boundary.bounds[-1])
+            # Строим LineString между первой и последней точкой
+            lines = [LineString([first_point, last_point])]
     else:
-        return geometry.centroid
+        return None  # Неизвестный тип границы
+
+
+
+    for line in lines:
+        if isinstance(line, LineString):
+            # Если линия — это LineString, то просто обрабатываем её как один отрезок
+            nearest_point_on_segment = line.interpolate(line.project(center))
+
+            # Проверяем, находится ли ближайшая точка внутри сектора
+            if detected_sector.contains_point(nearest_point_on_segment):
+                # Расстояние между центром сектора и ближайшей точкой на сегменте
+                distance = geodesic((center.y, center.x),
+                                    (nearest_point_on_segment.y, nearest_point_on_segment.x)).meters
+                if distance < min_distance:
+                    min_distance = distance
+                    nearest_point = nearest_point_on_segment
+        else:
+            # Если линия не LineString, игнорируем или обрабатываем по-другому
+            continue
+
+    return min_distance if nearest_point is not None else None
 
 
 def calculate_azimuth(start, end):
@@ -157,31 +205,33 @@ def main():
             outside_point = point2 if not inside2 else point1
             outside_azimuth = calculate_azimuth((intersection.x, intersection.y), (outside_point.x, outside_point.y))
             print(f"Азимут вектора до точки снаружи: {outside_azimuth}°")
+            print("=================================")
 
-            radius = 100
-            sector_angle = 90
-            direction = outside_azimuth
-            tags = {'building': True, 'highway': True, 'landuse': True}
-            gdf = ox.features_from_point((latitude, longitude), tags=tags, dist=radius)
-            center_point = Point(longitude, latitude)
+            radius = 60
+            sector_angle = 70
+            tags = {'building': True, 'highway': ['residential'], 'landuse': True}
+            gdf = ox.features_from_point((latitude, longitude), tags=tags, dist=1000)
+            detection_sector = Sector(center=(outside_point.x, outside_point.y), azimuth=outside_azimuth,
+                                      angle=sector_angle,
+                                      radius=radius)
 
-            filtered_gdf = gdf[gdf.geometry.apply(
-                lambda geom: is_point_in_sector(geom.centroid, center_point, direction, sector_angle))]
+            for idx, row in gdf.iterrows():
+                if not isinstance(row.geometry, Point):
+                    geometry = row.geometry
+                    distance = get_distance_to_nearest_boundary_point(geometry, detection_sector)
+                    if distance is not None:
+                        if str(row.building)!='nan':
+                            print(
+                                f"Здание ({idx}) - Улица {row.get('addr:street')}, Дом {row.get('addr:housenumber')}, distance: {distance}")
+                        elif str(row.highway)!='nan':
+                            print(
+                                f"Улица {row.get('name')} ({idx}), distance: {distance}")
+                    # print(f"Найдено: {row}, расстояние: {distance:.2f} метров")
 
-            allowed_highways = ["residential"]
-            origin_point = (latitude, longitude)
-
-            for idx, row in filtered_gdf.iterrows():
-                geometry = row.geometry
-                nearest_point = get_nearest_point(geometry, center_point)
-                nearest_point_coords = (nearest_point.y, nearest_point.x)
-                distance = geodesic(origin_point, nearest_point_coords).meters
-
-                if distance < radius * 1.1:
-                    if row.highway in allowed_highways:
-                        print(f"Найден highway: {row.highway}, расстояние: {distance:.2f} метров")
-                    if row.building == 'yes':
-                        print(f"Найден building, расстояние: {distance:.2f} метров")
+                    # if row.highway in allowed_highways:
+                    #     print(f"Найден highway: {row.highway}, расстояние: {distance:.2f} метров")
+                    # if row.building == 'yes':
+                    #     print(f"Найден building, расстояние: {distance:.2f} метров")
 
 
 if __name__ == '__main__':
