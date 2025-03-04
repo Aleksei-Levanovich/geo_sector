@@ -1,11 +1,17 @@
 import math
 
+import matplotlib.pyplot as plt
 import numpy as np
 import osmnx as ox
+import pyproj
 from geopy.distance import geodesic
+from matplotlib.patches import PathPatch
+from matplotlib.path import Path
 from shapely.geometry import Point, LineString
 from shapely.geometry.multilinestring import MultiLineString
 from shapely.geometry.multipoint import MultiPoint
+from shapely.geometry.polygon import Polygon
+from shapely.ops import transform
 
 from Sector import Sector
 
@@ -67,7 +73,6 @@ def get_distance_to_nearest_boundary_point(geometry, detected_sector: Sector):
         if isinstance(line, LineString):
             # Если линия — это LineString, то просто обрабатываем её как один отрезок
             nearest_point_on_segment = line.interpolate(line.project(center))
-
             # Проверяем, находится ли ближайшая точка внутри сектора
             if detected_sector.contains_point(nearest_point_on_segment):
                 # Расстояние между центром сектора и ближайшей точкой на сегменте
@@ -112,8 +117,6 @@ def main():
         print("Нет объектов вблизи точки. Попробуйте увеличить радиус или изменить теги.")
         return 0
 
-    print("Найденные объекты:")
-    print(gdf[['name', 'geometry']])
 
     object_found = False
     polygon = None
@@ -205,25 +208,73 @@ def main():
             print(f"Азимут вектора до точки снаружи: {outside_azimuth}°")
             print("=================================")
 
-            radius = 60
+            radius = 30
             sector_angle = 70
-            tags = {'building': True, 'highway': ['residential'], 'landuse': True}
-            gdf = ox.features_from_point((latitude, longitude), tags=tags, dist=1000)
             detection_sector = Sector(center=(outside_point.x, outside_point.y), azimuth=outside_azimuth,
                                       angle=sector_angle,
                                       radius=radius)
+
+            tags = {'building': True, 'highway': ['residential'], 'landuse': True}
+            # tags = {'highway': ['residential']}
+            gdf = ox.features_from_point((latitude, longitude), tags=tags, dist=100)
 
             for idx, row in gdf.iterrows():
                 if not isinstance(row.geometry, Point):
                     geometry = row.geometry
                     distance = get_distance_to_nearest_boundary_point(geometry, detection_sector)
                     if distance is not None:
-                        if str(row.building) != 'nan':
+                        if row.get('building') is not None and str(row.get('building')) != 'nan':
                             print(
-                                f"Здание ({idx}) - Улица {row.get('addr:street')}, Дом {row.get('addr:housenumber')}, distance: {distance}")
-                        elif str(row.highway) != 'nan':
+                                f"Здание ({idx}) - улица {row.get('addr:street')}, дом {row.get('addr:housenumber')}, distance: {distance}")
+                        elif row.get('highway') is not None and str(row.get('highway')) != 'nan':
                             print(
                                 f"Улица {row.get('name')} ({idx}), distance: {distance}")
+
+
+            if gdf.crs is None:
+                gdf.set_crs(epsg=4326, inplace=True)
+
+            # Project the GeoDataFrame to UTM Zone 36N (EPSG:32636) for Saint Petersburg
+            gdf = gdf.to_crs(epsg=32636)
+
+            # Plot the GeoDataFrame
+            fig, ax = plt.subplots(figsize=(10, 10))
+            gdf.plot(ax=ax, color='blue', edgecolor='black', alpha=0.5)
+
+            sector_polygon = detection_sector.polygon
+
+            # Определяем преобразование в EPSG:32636 (UTM Zone 36N)
+            transformer = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:32636", always_xy=True)
+
+            # Преобразуем sector_polygon в EPSG:32636
+            sector_polygon_transformed = transform(transformer.transform, sector_polygon)
+
+            # Validate the transformed polygon
+            if not isinstance(sector_polygon_transformed, Polygon):
+                raise ValueError(f"Transformation failed: got {type(sector_polygon_transformed)}")
+            if sector_polygon_transformed.is_empty:
+                raise ValueError("Transformed polygon is empty")
+
+            coords = list(sector_polygon_transformed.exterior.coords)
+
+            # Create a Matplotlib Path from the coordinates
+            vertices = [(x, y) for x, y in coords]
+            codes = [Path.MOVETO] + [Path.LINETO] * (len(vertices) - 2) + [Path.CLOSEPOLY]
+            path = Path(vertices, codes)
+
+            # Create and add the patch
+            patch = PathPatch(path, facecolor='red', edgecolor='black', alpha=0.5, zorder=2)
+            ax.add_patch(patch)
+
+            x_coords, y_coords = zip(*coords)
+            ax.set_xlim(min(x_coords) - 100, max(x_coords) + 100)
+            ax.set_ylim(min(y_coords) - 100, max(y_coords) + 100)
+
+            # Add a title and show the plot
+            plt.title("Buildings around Saint Petersburg (EPSG:32636)")
+            plt.axis('off')  # Turn off axis for cleaner visualization
+            plt.show()
+
 
 
 if __name__ == '__main__':

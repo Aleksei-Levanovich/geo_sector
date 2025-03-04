@@ -33,7 +33,7 @@ class Sector:
         end_azimuth = self.azimuth + self.angle / 2
 
         # Генерируем точки по окружности
-        num_points = self.angle * 5
+        num_points = self.angle * 1
         points = []
         for i in range(num_points + 1):  # +1 для замыкания сектора
             current_azimuth = start_azimuth + (end_azimuth - start_azimuth) * i / num_points
