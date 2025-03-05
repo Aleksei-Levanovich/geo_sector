@@ -15,26 +15,21 @@ from shapely.ops import transform
 
 from Sector import Sector
 
+# Исходная точка
+LONGITUDE = 30.2773029
+LATITUDE = 59.93520094
+
+# Параметры сектора
+RADIUS = 30
+SECTOR_ANGLE = 40
+
+NEAREST_POINTS = []
+
 
 def move_point(lat, lon, bearing, distance_m):
     origin = (lon, lat)
     destination = geodesic(meters=distance_m).destination(origin, bearing)
     return destination.latitude, destination.longitude
-
-
-def is_point_in_sector(point, center, direction, angle):
-    dx = point.x - center.x
-    dy = point.y - center.y
-    point_angle = math.degrees(math.atan2(dx, dy))
-    point_angle = (point_angle + 360) % 360
-    direction = (direction + 360) % 360
-    half_angle = angle / 2
-    lower_bound = (direction - half_angle + 360) % 360
-    upper_bound = (direction + half_angle + 360) % 360
-    if lower_bound <= upper_bound:
-        return lower_bound <= point_angle <= upper_bound
-    else:
-        return point_angle >= lower_bound or point_angle <= upper_bound
 
 
 def get_distance_to_nearest_boundary_point(geometry, detected_sector: Sector):
@@ -51,7 +46,6 @@ def get_distance_to_nearest_boundary_point(geometry, detected_sector: Sector):
     center = Point(detected_sector.center)  # Центр сектора
     boundary = geometry.boundary  # Граница объекта (может быть MultiLineString или LineString)
     min_distance = float("inf")
-    nearest_point = None
     # Обрабатываем случай, если граница состоит из нескольких частей
     if isinstance(boundary, MultiLineString):
         lines = list(boundary.geoms)  # Достаём отдельные LineString
@@ -69,23 +63,31 @@ def get_distance_to_nearest_boundary_point(geometry, detected_sector: Sector):
     else:
         return None  # Неизвестный тип границы
 
+    point_to_draw = None
     for line in lines:
         if isinstance(line, LineString):
-            # Если линия — это LineString, то просто обрабатываем её как один отрезок
-            nearest_point_on_segment = line.interpolate(line.project(center))
-            # Проверяем, находится ли ближайшая точка внутри сектора
-            if detected_sector.contains_point(nearest_point_on_segment):
-                # Расстояние между центром сектора и ближайшей точкой на сегменте
-                distance = geodesic((center.y, center.x),
-                                    (nearest_point_on_segment.y, nearest_point_on_segment.x)).meters
-                if distance < min_distance:
-                    min_distance = distance
-                    nearest_point = nearest_point_on_segment
+            if detected_sector.intersects_line(line):
+                a = detected_sector.get_closest_intersection_point(line)
+                if a:
+                    distance_a = geodesic((center.y, center.x), (a.y, a.x)).meters
+                else:
+                    distance_a = float("inf")
+                b = detected_sector.get_axis_intersection_point(line)
+                if b:
+                    distance_b = geodesic((center.y, center.x), (b.y, b.x)).meters
+                else:
+                    distance_b = float("inf")
+                if min_distance > min(distance_a, distance_b):
+                    min_distance = min(distance_a, distance_b)
+                    if distance_a < distance_b:
+                        point_to_draw = a
+                    else:
+                        point_to_draw = b
         else:
-            # Если линия не LineString, игнорируем или обрабатываем по-другому
             continue
-
-    return min_distance if nearest_point is not None else None
+    if point_to_draw:
+        NEAREST_POINTS.append(point_to_draw)
+    return min_distance if min_distance < float("inf") else None
 
 
 def calculate_azimuth(start, end):
@@ -108,23 +110,18 @@ def is_point_inside_polygon(point, polygon):
 
 
 def main():
-    latitude = 59.93520094
-    longitude = 30.2773029
-    target_point = Point(longitude, latitude)
+    target_point = Point(LONGITUDE, LATITUDE)
 
-    gdf = ox.features_from_point((latitude, longitude), tags={'building': True}, dist=10)
+    gdf = ox.features_from_point((LATITUDE, LONGITUDE), tags={'building': True}, dist=10)
     if gdf.empty:
         print("Нет объектов вблизи точки. Попробуйте увеличить радиус или изменить теги.")
         return 0
 
-
     object_found = False
     polygon = None
     for idx, row in gdf.iterrows():
-        if row['geometry'].contains(target_point):
+        if row.get('geometry') and row.get('geometry').contains(target_point):
             print(f"Точка принадлежит объекту: {row.get('name', 'Без имени')}")
-            print("Контурные координаты объекта:")
-            print(row['geometry'].exterior.coords)
             polygon = row['geometry']
             object_found = True
             break
@@ -171,7 +168,6 @@ def main():
         endpoint2 = move_point(lat, lon, angle2, perpendicular_length_m / 2)
 
         perpendicular_line = LineString([endpoint1, endpoint2])
-        print(f"Перпендикулярная линия: {perpendicular_line}")
 
         intersection = nearest_segment.intersection(perpendicular_line)
 
@@ -208,15 +204,11 @@ def main():
             print(f"Азимут вектора до точки снаружи: {outside_azimuth}°")
             print("=================================")
 
-            radius = 30
-            sector_angle = 70
             detection_sector = Sector(center=(outside_point.x, outside_point.y), azimuth=outside_azimuth,
-                                      angle=sector_angle,
-                                      radius=radius)
+                                      angle=SECTOR_ANGLE, radius=RADIUS)
 
             tags = {'building': True, 'highway': ['residential'], 'landuse': True}
-            # tags = {'highway': ['residential']}
-            gdf = ox.features_from_point((latitude, longitude), tags=tags, dist=100)
+            gdf = ox.features_from_point((LATITUDE, LONGITUDE), tags=tags, dist=100)
 
             for idx, row in gdf.iterrows():
                 if not isinstance(row.geometry, Point):
@@ -229,7 +221,6 @@ def main():
                         elif row.get('highway') is not None and str(row.get('highway')) != 'nan':
                             print(
                                 f"Улица {row.get('name')} ({idx}), distance: {distance}")
-
 
             if gdf.crs is None:
                 gdf.set_crs(epsg=4326, inplace=True)
@@ -266,6 +257,14 @@ def main():
             patch = PathPatch(path, facecolor='red', edgecolor='black', alpha=0.5, zorder=2)
             ax.add_patch(patch)
 
+            transformed_points = [transform(transformer.transform, point) for point in NEAREST_POINTS]
+
+            if len(transformed_points) > 0:
+                # Extract x and y coordinates
+                x_coords, y_coords = zip(*[(point.x, point.y) for point in transformed_points])
+                # Plot the points
+                ax.scatter(x_coords, y_coords, color='yellow', marker='o', zorder=3)
+
             x_coords, y_coords = zip(*coords)
             ax.set_xlim(min(x_coords) - 100, max(x_coords) + 100)
             ax.set_ylim(min(y_coords) - 100, max(y_coords) + 100)
@@ -274,7 +273,6 @@ def main():
             plt.title("Buildings around Saint Petersburg (EPSG:32636)")
             plt.axis('off')  # Turn off axis for cleaner visualization
             plt.show()
-
 
 
 if __name__ == '__main__':
