@@ -118,34 +118,58 @@ class Sector:
 
     def get_axis_intersection_point(self, line: LineString):
         """
-        Возвращает точку пересечения LineString с центральной осью сектора.
+        Возвращает точку пересечения LineString с осями сектора.
 
         Параметры:
         - line: LineString — линия для проверки.
 
         Возвращает:
-        - Point или None: точка пересечения с центральной осью или None, если пересечения нет.
+        - Point или None: точка пересечения с осями или None, если пересечения нет.
         """
         # Определяем центральную ось как LineString от центра до точки на радиусе по азимуту
         lon_center, lat_center = self.center
-        axis_end = geodesic(meters=self.radius).destination((lat_center, lon_center), self.azimuth)
-        axis = LineString([(lon_center, lat_center), (axis_end.longitude, axis_end.latitude)])
+        central_axis_end = geodesic(meters=self.radius).destination((lat_center, lon_center), self.azimuth)
+        central_axis = LineString([(lon_center, lat_center), (central_axis_end.longitude, central_axis_end.latitude)])
 
-        # Проверяем пересечение линии с осью
-        if not axis.intersects(line):
+        # Определяем левую и правую оси
+        left_axis = None
+        right_axis = None
+
+        if self.angle > 180:
+            left_axis_end = geodesic(meters=self.radius).destination((lat_center, lon_center), self.azimuth - 90)
+            right_axis_end = geodesic(meters=self.radius).destination((lat_center, lon_center), self.azimuth + 90)
+            left_axis = LineString([(lon_center, lat_center), (left_axis_end.longitude, left_axis_end.latitude)])
+            right_axis = LineString([(lon_center, lat_center), (right_axis_end.longitude, right_axis_end.latitude)])
+
+        # Список осей для проверки
+        axes = []
+        if central_axis is not None:
+            axes.append(central_axis)
+        if left_axis is not None:
+            axes.append(left_axis)
+        if right_axis is not None:
+            axes.append(right_axis)
+
+        # Список точек пересечения
+        intersection_points = []
+
+        for axis in axes:
+            if axis.intersects(line):
+                intersection = axis.intersection(line)
+                if not intersection.is_empty:
+                    if intersection.geom_type == 'Point':
+                        intersection_points.append(intersection)
+                    elif intersection.geom_type == 'MultiPoint':
+                        intersection_points.extend(intersection.geoms)
+                    else:
+                        # Если пересечение — отрезок или другая геометрия, игнорируем
+                        continue
+
+        if not intersection_points:
             return None
 
-        # Находим точку пересечения
-        intersection = axis.intersection(line)
+        # Находим точку, ближайшую к центру
+        center_point = Point(lon_center, lat_center)
+        nearest_point = min(intersection_points, key=lambda p: p.distance(center_point))
 
-        if intersection.is_empty:
-            return None
-
-        if intersection.geom_type == 'Point':
-            return intersection
-        elif intersection.geom_type == 'MultiPoint':
-            # Если несколько точек пересечения, возвращаем ближайшую к центру
-            return min(intersection.geoms, key=lambda p: p.distance(Point(self.center)))
-        else:
-            # Если пересечение — отрезок или другая геометрия, возвращаем None
-            return None
+        return nearest_point

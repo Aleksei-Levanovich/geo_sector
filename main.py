@@ -1,3 +1,4 @@
+import json
 import math
 
 import matplotlib.pyplot as plt
@@ -21,7 +22,7 @@ LATITUDE = 59.93520094
 
 # Параметры сектора
 RADIUS = 30
-SECTOR_ANGLE = 40
+SECTOR_ANGLE = 150
 
 NEAREST_POINTS = []
 
@@ -67,27 +68,29 @@ def get_distance_to_nearest_boundary_point(geometry, detected_sector: Sector):
     for line in lines:
         if isinstance(line, LineString):
             if detected_sector.intersects_line(line):
-                a = detected_sector.get_closest_intersection_point(line)
-                if a:
-                    distance_a = geodesic((center.y, center.x), (a.y, a.x)).meters
+                interpolated_point = detected_sector.get_closest_intersection_point(line)
+                if interpolated_point:
+                    distance_to_interpolated_point = geodesic((center.y, center.x),
+                                                              (interpolated_point.y, interpolated_point.x)).meters
                 else:
-                    distance_a = float("inf")
-                b = detected_sector.get_axis_intersection_point(line)
-                if b:
-                    distance_b = geodesic((center.y, center.x), (b.y, b.x)).meters
+                    distance_to_interpolated_point = float("inf")
+                central_axis_point = detected_sector.get_axis_intersection_point(line)
+                if central_axis_point:
+                    distance_to_axis_point = geodesic((center.y, center.x),
+                                                      (central_axis_point.y, central_axis_point.x)).meters
                 else:
-                    distance_b = float("inf")
-                if min_distance > min(distance_a, distance_b):
-                    min_distance = min(distance_a, distance_b)
-                    if distance_a < distance_b:
-                        point_to_draw = a
+                    distance_to_axis_point = float("inf")
+                if min_distance > min(distance_to_interpolated_point, distance_to_axis_point):
+                    min_distance = min(distance_to_interpolated_point, distance_to_axis_point)
+                    if distance_to_interpolated_point < distance_to_axis_point:
+                        point_to_draw = interpolated_point
                     else:
-                        point_to_draw = b
+                        point_to_draw = central_axis_point
         else:
             continue
     if point_to_draw:
         NEAREST_POINTS.append(point_to_draw)
-    return min_distance if min_distance < float("inf") else None
+    return min_distance if min_distance < float("inf") else None, point_to_draw
 
 
 def calculate_azimuth(start, end):
@@ -119,11 +122,14 @@ def main():
 
     object_found = False
     polygon = None
+    door_of_idx = None
+
     for idx, row in gdf.iterrows():
         if row.get('geometry') and row.get('geometry').contains(target_point):
             print(f"Точка принадлежит объекту: {row.get('name', 'Без имени')}")
             polygon = row['geometry']
             object_found = True
+            door_of_idx = idx
             break
 
     if not object_found:
@@ -210,17 +216,29 @@ def main():
             tags = {'building': True, 'highway': ['residential'], 'landuse': True}
             gdf = ox.features_from_point((LATITUDE, LONGITUDE), tags=tags, dist=100)
 
+            distances = []
+
             for idx, row in gdf.iterrows():
-                if not isinstance(row.geometry, Point):
-                    geometry = row.geometry
-                    distance = get_distance_to_nearest_boundary_point(geometry, detection_sector)
-                    if distance is not None:
-                        if row.get('building') is not None and str(row.get('building')) != 'nan':
-                            print(
-                                f"Здание ({idx}) - улица {row.get('addr:street')}, дом {row.get('addr:housenumber')}, distance: {distance}")
-                        elif row.get('highway') is not None and str(row.get('highway')) != 'nan':
-                            print(
-                                f"Улица {row.get('name')} ({idx}), distance: {distance}")
+                if idx != door_of_idx:
+                    if row.get('landuse') is None or str(row.get('landuse')) == 'nan': # Убираем пересечения с landuse
+                        if not isinstance(row.geometry, Point):
+                            geometry = row.geometry
+                            distance, point_of_crossing = get_distance_to_nearest_boundary_point(geometry, detection_sector)
+                            if distance is not None:
+                                if row.get('building') is not None and str(row.get('building')) != 'nan':
+                                    distances.append({'type': 'building', 'distance': distance, 'idx': idx,
+                                                      'address': f"Адрес: {row.get('addr:street')}, дом {row.get('addr:housenumber')}",
+                                                      'lon': point_of_crossing.x,
+                                                      'lat': point_of_crossing.y,
+                                                      })
+                                elif row.get('highway') is not None and str(row.get('highway')) != 'nan':
+                                    distances.append({'type': 'street', 'distance': distance, 'idx': idx,
+                                                      'address': f"Улица: {row.get('name')}",
+                                                      'lon': point_of_crossing.x,
+                                                      'lat': point_of_crossing.y,
+                                                      })
+            sorted_distances = sorted(distances, key=lambda d: d['distance'])
+            print(json.dumps(sorted_distances, indent=2, ensure_ascii=False))
 
             if gdf.crs is None:
                 gdf.set_crs(epsg=4326, inplace=True)
