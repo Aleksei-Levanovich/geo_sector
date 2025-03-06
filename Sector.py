@@ -70,52 +70,6 @@ class Sector:
         """
         return self.polygon.intersects(line)
 
-    def get_closest_intersection_point(self, line: LineString):
-        """
-        Находит ближайшую точку на пересечении LineString с сектором к центру.
-
-        Возвращает:
-        - Point или None: ближайшая точка к центру на пересечении или None, если пересечения нет.
-        """
-        if not self.polygon.intersects(line):
-            return None
-
-        center_point = Point(self.center)
-        intersection = self.polygon.intersection(line)
-
-        if intersection.is_empty:
-            return None
-
-        # Функция для поиска ближайшей точки на геометрии
-        def find_closest_on_geometry(geom):
-            if geom.geom_type == 'Point':
-                return geom
-            elif geom.geom_type == 'LineString':
-                project_t = geom.project(center_point, normalized=True)
-                return geom.interpolate(project_t, normalized=True)
-            elif geom.geom_type in ['MultiPoint', 'MultiLineString']:
-                geometry_closest_point = None
-                min_distance = float('inf')
-                for sub_geom in geom.geoms:
-                    point = find_closest_on_geometry(sub_geom)
-                    dist = point.distance(center_point)
-                    if dist < min_distance:
-                        min_distance = dist
-                        geometry_closest_point = point
-                return geometry_closest_point
-            return None
-
-        closest_point = find_closest_on_geometry(intersection)
-
-        # Если пересечение есть, но точка не найдена, проверяем всю линию
-        if not closest_point:
-            t = line.project(center_point, normalized=True)
-            candidate_point = line.interpolate(t, normalized=True)
-            if self.polygon.intersects(Point(candidate_point)):  # Проверяем пересечение с точкой
-                return candidate_point
-
-        return closest_point
-
     def get_axis_intersection_point(self, line: LineString):
         """
         Возвращает точку пересечения LineString с осями сектора.
@@ -153,6 +107,21 @@ class Sector:
         # Список точек пересечения
         intersection_points = []
 
+        # Дополнительная проверка
+        half_angle = self.angle / 2
+        end_angle = self.azimuth + half_angle
+        current_angle = self.azimuth - half_angle
+        while current_angle <= end_angle:
+            if current_angle > 360:
+                angle = 360 - current_angle
+            elif current_angle < 0:
+                angle = 360 + current_angle
+            else:
+                angle = current_angle
+            axis = geodesic(meters=self.radius).destination((lat_center, lon_center), angle)
+            axes.append(LineString([(lon_center, lat_center), (axis.longitude, axis.latitude)]))
+            current_angle += 0.1
+
         for axis in axes:
             if axis.intersects(line):
                 intersection = axis.intersection(line)
@@ -168,8 +137,14 @@ class Sector:
         if not intersection_points:
             return None
 
+        center_coords = (lat_center, lon_center)  # (широта, долгота) для geodesic
+        distances = [
+            geodesic(center_coords, (p.y, p.x)).meters  # p.y = latitude, p.x = longitude
+            for p in intersection_points
+        ]
+        min_distance = min(distances)
         # Находим точку, ближайшую к центру
-        center_point = Point(lon_center, lat_center)
-        nearest_point = min(intersection_points, key=lambda p: p.distance(center_point))
+        min_distance_idx = distances.index(min_distance)
+        nearest_point = intersection_points[min_distance_idx]
 
-        return nearest_point
+        return nearest_point, min_distance

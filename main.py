@@ -65,32 +65,19 @@ def get_distance_to_nearest_boundary_point(geometry, detected_sector: Sector):
         return None  # Неизвестный тип границы
 
     point_to_draw = None
+    distance = float("inf")
     for line in lines:
         if isinstance(line, LineString):
             if detected_sector.intersects_line(line):
-                interpolated_point = detected_sector.get_closest_intersection_point(line)
-                if interpolated_point:
-                    distance_to_interpolated_point = geodesic((center.y, center.x),
-                                                              (interpolated_point.y, interpolated_point.x)).meters
-                else:
-                    distance_to_interpolated_point = float("inf")
-                central_axis_point = detected_sector.get_axis_intersection_point(line)
-                if central_axis_point:
-                    distance_to_axis_point = geodesic((center.y, center.x),
-                                                      (central_axis_point.y, central_axis_point.x)).meters
-                else:
-                    distance_to_axis_point = float("inf")
-                if min_distance > min(distance_to_interpolated_point, distance_to_axis_point):
-                    min_distance = min(distance_to_interpolated_point, distance_to_axis_point)
-                    if distance_to_interpolated_point < distance_to_axis_point:
-                        point_to_draw = interpolated_point
-                    else:
-                        point_to_draw = central_axis_point
+                axis_intersection_point, distance = detected_sector.get_axis_intersection_point(line)
+                if axis_intersection_point:
+                    point_to_draw = axis_intersection_point
+                    min_distance = min(min_distance, distance)
         else:
             continue
     if point_to_draw:
         NEAREST_POINTS.append(point_to_draw)
-    return min_distance if min_distance < float("inf") else None, point_to_draw
+    return distance if distance < float("inf") else None, point_to_draw
 
 
 def calculate_azimuth(start, end):
@@ -216,29 +203,31 @@ def main():
             tags = {'building': True, 'highway': ['residential'], 'landuse': True}
             gdf = ox.features_from_point((LATITUDE, LONGITUDE), tags=tags, dist=100)
 
-            distances = []
+            points_in_sector = []
 
             for idx, row in gdf.iterrows():
                 if idx != door_of_idx:
-                    if row.get('landuse') is None or str(row.get('landuse')) == 'nan': # Убираем пересечения с landuse
+                    if row.get('landuse') is None or str(row.get('landuse')) == 'nan':  # Убираем пересечения с landuse
                         if not isinstance(row.geometry, Point):
                             geometry = row.geometry
-                            distance, point_of_crossing = get_distance_to_nearest_boundary_point(geometry, detection_sector)
+                            distance, point_of_crossing = get_distance_to_nearest_boundary_point(geometry,
+                                                                                                 detection_sector)
                             if distance is not None:
                                 if row.get('building') is not None and str(row.get('building')) != 'nan':
-                                    distances.append({'type': 'building', 'distance': distance, 'idx': idx,
+                                    points_in_sector.append({'type': 'building', 'distance': distance, 'idx': idx,
                                                       'address': f"Адрес: {row.get('addr:street')}, дом {row.get('addr:housenumber')}",
                                                       'lon': point_of_crossing.x,
                                                       'lat': point_of_crossing.y,
                                                       })
                                 elif row.get('highway') is not None and str(row.get('highway')) != 'nan':
-                                    distances.append({'type': 'street', 'distance': distance, 'idx': idx,
+                                    points_in_sector.append({'type': 'street', 'distance': distance, 'idx': idx,
                                                       'address': f"Улица: {row.get('name')}",
                                                       'lon': point_of_crossing.x,
                                                       'lat': point_of_crossing.y,
                                                       })
-            sorted_distances = sorted(distances, key=lambda d: d['distance'])
-            print(json.dumps(sorted_distances, indent=2, ensure_ascii=False))
+
+            sorted_points_by_distance = sorted(points_in_sector, key=lambda p: p['distance'])
+            print(json.dumps(sorted_points_by_distance, indent=2, ensure_ascii=False))
 
             if gdf.crs is None:
                 gdf.set_crs(epsg=4326, inplace=True)
