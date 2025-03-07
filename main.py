@@ -17,8 +17,8 @@ from shapely.ops import transform
 from Sector import Sector
 
 # Исходная точка
-LONGITUDE = 30.2773029
-LATITUDE = 59.93520094
+LONGITUDE = 30.275591995912155
+LATITUDE = 59.93384710891245
 
 # Параметры сектора
 RADIUS = 30
@@ -101,8 +101,9 @@ def is_point_inside_polygon(point, polygon):
 
 def main():
     target_point = Point(LONGITUDE, LATITUDE)
+    search_radius = 10
 
-    gdf = ox.features_from_point((LATITUDE, LONGITUDE), tags={'building': True}, dist=10)
+    gdf = ox.features_from_point((LATITUDE, LONGITUDE), tags={'building': True}, dist=search_radius)
     if gdf.empty:
         print("Нет объектов вблизи точки. Попробуйте увеличить радиус или изменить теги.")
         return 0
@@ -118,6 +119,35 @@ def main():
             object_found = True
             door_of_idx = idx
             break
+
+    # Если точка не принадлежит ни одному из объектов, можно выбрать ближайший объект
+    if not object_found:
+        azimuth = 0
+        axes = []
+        # Список точек пересечения
+        min_distance = float("inf")
+        nearest_row = None
+        center_coords = (LATITUDE, LONGITUDE)
+        while azimuth < 360:
+            axis = geodesic(meters=search_radius).destination((LATITUDE, LONGITUDE), azimuth)
+            axes.append(LineString([(LONGITUDE, LATITUDE), (axis.longitude, axis.latitude)]))
+            azimuth += 0.1
+        for idx, row in gdf.iterrows():
+            for axis in axes:
+                if axis.intersects(row.geometry.boundary):
+                    intersection = axis.intersection(row.geometry.boundary)
+                    if not intersection.is_empty:
+                        d = geodesic(center_coords, (intersection.y, intersection.x)).meters
+                        if d < min_distance:
+                            min_distance = d
+                            door_of_idx = idx
+                            polygon = row['geometry']
+                            nearest_row = row
+        if polygon is not None:
+            print(f"Точка принадлежит объекту: {nearest_row.get('name', 'Без имени')}")
+            object_found = True
+        else:
+            print("Нет объектов вблизи точки. Попробуйте увеличить радиус или изменить теги.")
 
     if not object_found:
         print("Точка не принадлежит ни одному из найденных объектов.")
@@ -215,16 +245,16 @@ def main():
                             if distance is not None:
                                 if row.get('building') is not None and str(row.get('building')) != 'nan':
                                     points_in_sector.append({'type': 'building', 'distance': distance, 'idx': idx,
-                                                      'address': f"Адрес: {row.get('addr:street')}, дом {row.get('addr:housenumber')}",
-                                                      'lon': point_of_crossing.x,
-                                                      'lat': point_of_crossing.y,
-                                                      })
+                                                             'address': f"Адрес: {row.get('addr:street')}, дом {row.get('addr:housenumber')}",
+                                                             'lon': point_of_crossing.x,
+                                                             'lat': point_of_crossing.y,
+                                                             })
                                 elif row.get('highway') is not None and str(row.get('highway')) != 'nan':
                                     points_in_sector.append({'type': 'street', 'distance': distance, 'idx': idx,
-                                                      'address': f"Улица: {row.get('name')}",
-                                                      'lon': point_of_crossing.x,
-                                                      'lat': point_of_crossing.y,
-                                                      })
+                                                             'address': f"Улица: {row.get('name')}",
+                                                             'lon': point_of_crossing.x,
+                                                             'lat': point_of_crossing.y,
+                                                             })
 
             sorted_points_by_distance = sorted(points_in_sector, key=lambda p: p['distance'])
             print(json.dumps(sorted_points_by_distance, indent=2, ensure_ascii=False))
